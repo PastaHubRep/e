@@ -17,6 +17,9 @@
 	  Section:CreateDropdown({ Title, Options, Default }, callback(choice))            -> { Set, Get, Refresh }
 	  Section:CreateBind    ({ Title, Default = Enum.KeyCode.X }, callback())          -> { Set, Get }
 
+	  Every control also takes an optional `Flag = "Id"` and is stored in Library.Flags[Id] (used by SaveManager).
+	  Dropdown also takes `Multi = true` (Set/Get use arrays). Set(v, true) on Box/Dropdown also fires the callback.
+
 	  Library:CreateNoti({ Title, Desc, ShowTime })
 	  Library:SetAccent(Color3)
 	  Window:Toggle() / Window:Destroy() / Page:Select()
@@ -51,10 +54,31 @@ local Library = {
 		Arrow    = "rbxassetid://6954383209",
 	},
 	Windows = {},
+	Flags = {}, -- every control registers itself here (used by SaveManager)
 }
 
 local T = Library.Theme
 local A = Library.Assets
+
+-- Registers a control in Library.Flags so SaveManager can save/load it.
+-- Give a control an explicit `Flag = "MyId"` in its options, or leave it out and an id is
+-- generated from "<page>/<section>/<title>".
+local function register(prefix, opts, obj, kind)
+	obj.Type = kind
+	local flag = opts.Flag
+	if not flag then
+		local base = prefix .. tostring(opts.Title)
+		flag = base
+		local n = 1
+		while Library.Flags[flag] do
+			n += 1
+			flag = base .. "#" .. n
+		end
+	end
+	obj.Flag = flag
+	Library.Flags[flag] = obj
+	return obj
+end
 
 --------------------------------------------------------------------
 -- Helpers
@@ -188,6 +212,7 @@ end
 --------------------------------------------------------------------
 function Library:CreateMain(cfg)
 	cfg = cfg or {}
+	Library.Flags = {}
 	local parent = getParent()
 	if parent:FindFirstChild("Feral GUI") then parent["Feral GUI"]:Destroy() end
 
@@ -270,6 +295,7 @@ function Library:CreateMain(cfg)
 	function Window:CreatePage(name, title)
 		order += 1
 		local myOrder = order
+		local pageName = name
 
 		local row = new("Frame", {Name = name .. "_Tab", Size = UDim2.new(1, -10, 0, 25), BackgroundTransparency = 1, LayoutOrder = myOrder, Parent = tabScroll})
 		local inner = new("Frame", {Position = UDim2.fromOffset(5, 0), Size = UDim2.new(1, -5, 1, 0), BackgroundTransparency = 1, Parent = row})
@@ -356,6 +382,7 @@ function Library:CreateMain(cfg)
 			table.insert(Page.Sections, {Name = secName, Frame = sec})
 
 			local Section = {}
+			local flagPrefix = pageName .. "/" .. secName .. "/"
 			local n = 0
 			local function nextOrder() n += 1 return n end
 			local function noop() end
@@ -402,10 +429,10 @@ function Library:CreateMain(cfg)
 				end
 				click.MouseButton1Click:Connect(function() state = not state apply(state) end)
 				if state then apply(true) end
-				return {
+				return register(flagPrefix, opts, {
 					Set = function(_, v) state = not not v apply(state) end,
 					Get = function() return state end,
-				}
+				}, "Toggle")
 			end
 
 			----------------------------------------------------------------
@@ -468,10 +495,13 @@ function Library:CreateMain(cfg)
 					tween(hl, {BackgroundTransparency = 1})
 					task.spawn(callback, input.Text)
 				end)
-				return {
-					Set = function(_, v) input.Text = tostring(v) end,
+				return register(flagPrefix, opts, {
+					Set = function(_, v, fire)
+						input.Text = tostring(v)
+						if fire then task.spawn(callback, input.Text) end
+					end,
 					Get = function() return input.Text end,
-				}
+				}, "Box")
 			end
 
 			----------------------------------------------------------------
@@ -536,10 +566,10 @@ function Library:CreateMain(cfg)
 				end)
 
 				render()
-				return {
+				return register(flagPrefix, opts, {
 					Set = function(_, v) setValue(v, false, true) end,
 					Get = function() return value end,
-				}
+				}, "Slider")
 			end
 
 			----------------------------------------------------------------
@@ -548,15 +578,40 @@ function Library:CreateMain(cfg)
 			function Section:CreateDropdown(opts, callback)
 				callback = callback or opts.Callback or noop
 				local options = opts.Options or {}
-				local cur = opts.Default or options[1]
+				local multi = opts.Multi and true or false -- Multi = true -> pick several, callback gets an array
 				local open = false
+
+				-- multi keeps a set { [name] = true }, single keeps the chosen name
+				local function toSet(v)
+					local set = {}
+					if type(v) == "table" then
+						for k, val in pairs(v) do
+							if type(k) == "number" then set[val] = true elseif val then set[k] = true end
+						end
+					elseif v ~= nil then
+						set[v] = true
+					end
+					return set
+				end
+				local cur
+				if multi then cur = toSet(opts.Default) else cur = opts.Default or options[1] end
+				local function selectedList()
+					local out = {}
+					for _, name in ipairs(options) do
+						if cur[name] then table.insert(out, name) end
+					end
+					return out
+				end
+				local function value() if multi then return selectedList() end return cur end
+				local function isSelected(name) if multi then return cur[name] == true end return name == cur end
 
 				local frame = new("Frame", {Name = "Dropdown", Size = UDim2.new(1, 0, 0, 25), BackgroundTransparency = 1, LayoutOrder = nextOrder(), Parent = sec})
 				local bg1 = new("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, -10, 1, 0),
 					BackgroundColor3 = T.Bg1, BorderSizePixel = 0, ClipsDescendants = true, Parent = frame}, {corner(4)})
 				local head = new("Frame", {Size = UDim2.new(1, 0, 0, 25), BackgroundColor3 = T.Bg2, BorderSizePixel = 0, ZIndex = 2, Parent = bg1}, {corner(4)})
 				local label = new("TextLabel", {Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -40, 1, 0), BackgroundTransparency = 1,
-					Font = Enum.Font.GothamBlack, TextSize = 14, TextColor3 = T.Text, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 2, Parent = head})
+					Font = Enum.Font.GothamBlack, TextSize = 14, TextColor3 = T.Text, TextXAlignment = Enum.TextXAlignment.Left,
+					TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 2, Parent = head})
 				local arrow = new("ImageLabel", {AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0), Size = UDim2.fromOffset(15, 15),
 					BackgroundTransparency = 1, Image = A.Arrow, ImageColor3 = T.Icon, ZIndex = 2, Parent = head})
 				local dbtn = new("TextButton", {Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", ZIndex = 3, Parent = head})
@@ -571,8 +626,16 @@ function Library:CreateMain(cfg)
 
 				local items = {}
 				local function refresh()
-					label.Text = opts.Title .. ": " .. tostring(cur)
-					for name, it in pairs(items) do tween(it.bar, {BackgroundTransparency = (name == cur) and 0 or 1}) end
+					local text
+					if multi then
+						local names = {}
+						for _, n in ipairs(selectedList()) do table.insert(names, tostring(n)) end
+						text = #names == 0 and "None" or table.concat(names, ", ")
+					else
+						text = cur == nil and "None" or tostring(cur)
+					end
+					label.Text = opts.Title .. ": " .. text
+					for name, it in pairs(items) do tween(it.bar, {BackgroundTransparency = isSelected(name) and 0 or 1}) end
 				end
 				local function rebuild()
 					for _, c in ipairs(scont:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
@@ -589,9 +652,13 @@ function Library:CreateMain(cfg)
 						local click = new("TextButton", {Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", Parent = it})
 						items[name] = {bar = b}
 						click.MouseButton1Click:Connect(function()
-							cur = name
+							if multi then
+								if cur[name] then cur[name] = nil else cur[name] = true end
+							else
+								cur = name
+							end
 							refresh()
-							task.spawn(callback, cur)
+							task.spawn(callback, value())
 						end)
 					end
 					refresh()
@@ -606,15 +673,32 @@ function Library:CreateMain(cfg)
 					tween(arrow, {Rotation = open and 90 or 0}, T.T2)
 				end)
 
-				return {
-					Set = function(_, v) cur = v refresh() end,
-					Get = function() return cur end,
+				-- Set(v) is silent; Set(v, true) also fires the callback (SaveManager uses this).
+				-- Multi dropdowns take/return an array of names; single ones a name (or nil for "None").
+				return register(flagPrefix, opts, {
+					Multi = multi,
+					Set = function(_, v, fire)
+						if multi then cur = toSet(v) else cur = v end
+						refresh()
+						if fire then task.spawn(callback, value()) end
+					end,
+					Get = function() return value() end,
 					Refresh = function(_, newOptions, keep)
 						options = newOptions
-						if not keep or not table.find(options, cur) then cur = options[1] end
+						if multi then
+							if not keep then
+								cur = {}
+							else
+								for name in pairs(cur) do
+									if not table.find(options, name) then cur[name] = nil end
+								end
+							end
+						elseif not keep or not table.find(options, cur) then
+							cur = options[1]
+						end
 						rebuild()
 					end,
-				}
+				}, "Dropdown")
 			end
 
 			----------------------------------------------------------------
@@ -662,10 +746,10 @@ function Library:CreateMain(cfg)
 					if i.KeyCode == key or i.UserInputType == key then task.spawn(callback, key) end
 				end)
 
-				return {
+				return register(flagPrefix, opts, {
 					Set = function(_, k) key = k btn.Text = keyName(key) end,
 					Get = function() return key end,
-				}
+				}, "Bind")
 			end
 
 			return Section
