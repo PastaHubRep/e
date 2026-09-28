@@ -108,8 +108,24 @@ local SaveManager = {} do
 				if not isfolder(built) then makefolder(built) end
 			end
 		end
-		ensure(self.Folder)
-		ensure(self.Folder .. "/settings")
+		local ok, err = pcall(function()
+			ensure(self.Folder)
+			ensure(self.Folder .. "/settings")
+		end)
+		if not ok then warn("[FeralSaveManager] could not create folders: " .. tostring(err)) end
+		return ok
+	end
+
+	-- returns nil if everything needed is there, otherwise a readable reason
+	function SaveManager:CheckSetup()
+		if not self.Library then return "SetLibrary(Library) was not called" end
+		if type(self.Library.Flags) ~= "table" then
+			return "FeralLib is outdated (no Library.Flags) - host the patched FeralLib.lua"
+		end
+		if not (writefile and readfile and isfile and isfolder and makefolder and listfiles) then
+			return "this executor has no file functions"
+		end
+		return nil
 	end
 
 	local function validName(name)
@@ -122,7 +138,8 @@ local SaveManager = {} do
 	function SaveManager:Save(name)
 		if not name then return false, "no config file is selected" end
 		if not validName(name) then return false, "invalid config name" end
-		assert(self.Library, "Must call SaveManager:SetLibrary(Library) first")
+		local problem = self:CheckSetup()
+		if problem then return false, problem end
 
 		local data = { objects = {} }
 		for idx, obj in next, self.Library.Flags do
@@ -136,14 +153,17 @@ local SaveManager = {} do
 		local success, encoded = pcall(HttpService.JSONEncode, HttpService, data)
 		if not success then return false, "failed to encode data" end
 
-		writefile(self.Folder .. "/settings/" .. name .. ".json", encoded)
+		self:BuildFolderTree()
+		local written, werr = pcall(writefile, self.Folder .. "/settings/" .. name .. ".json", encoded)
+		if not written then return false, "writefile failed: " .. tostring(werr) end
 		return true
 	end
 
 	function SaveManager:Load(name)
 		if not name then return false, "no config file is selected" end
 		if not validName(name) then return false, "invalid config name" end
-		assert(self.Library, "Must call SaveManager:SetLibrary(Library) first")
+		local problem = self:CheckSetup()
+		if problem then return false, problem end
 
 		local file = self.Folder .. "/settings/" .. name .. ".json"
 		if not isfile(file) then return false, "invalid file" end
@@ -211,6 +231,23 @@ local SaveManager = {} do
 			lib:CreateNoti({ Title = "Config", Desc = text, ShowTime = 3 })
 		end
 
+		local problem = self:CheckSetup()
+		if problem then
+			warn("[FeralSaveManager] " .. problem)
+			notify(problem)
+		end
+
+		-- wrap every button so an error shows up as a notification instead of failing silently
+		local function safe(fn)
+			return function()
+				local ok, err = pcall(fn)
+				if not ok then
+					warn("[FeralSaveManager] " .. tostring(err))
+					notify("Error: " .. tostring(err))
+				end
+			end
+		end
+
 		local nameBox = section:CreateBox({ Title = "Config Name", Placeholder = "Enter config name", Flag = "SaveManager_ConfigName" })
 		local configList = section:CreateDropdown({ Title = "Config List", Options = self:RefreshConfigList(), Flag = "SaveManager_ConfigList" })
 		configList:Set(nil) -- start on "None" instead of the first config
@@ -226,7 +263,7 @@ local SaveManager = {} do
 			configList:Set(nil)
 		end
 
-		section:CreateButton({ Title = "Create Config" }, function()
+		section:CreateButton({ Title = "Create Config" }, safe(function()
 			local name = nameBox:Get()
 			if not validName(name) then
 				return notify("Invalid config name (empty or contains / \\)")
@@ -235,23 +272,23 @@ local SaveManager = {} do
 			if not success then return notify("Failed to save config: " .. err) end
 			notify(string.format("Created config %q", name))
 			refreshList()
-		end)
+		end))
 
-		section:CreateButton({ Title = "Load Config" }, function()
+		section:CreateButton({ Title = "Load Config" }, safe(function()
 			local name = configList:Get()
 			local success, err = self:Load(name)
 			if not success then return notify("Failed to load config: " .. err) end
 			notify(string.format("Loaded config %q", name))
-		end)
+		end))
 
-		section:CreateButton({ Title = "Overwrite Config" }, function()
+		section:CreateButton({ Title = "Overwrite Config" }, safe(function()
 			local name = configList:Get()
 			local success, err = self:Save(name)
 			if not success then return notify("Failed to overwrite config: " .. err) end
 			notify(string.format("Overwrote config %q", name))
-		end)
+		end))
 
-		section:CreateButton({ Title = "Delete Config" }, function()
+		section:CreateButton({ Title = "Delete Config" }, safe(function()
 			local name = configList:Get()
 			local success, err = self:Delete(name)
 			if not success then return notify("Failed to delete config: " .. err) end
@@ -261,24 +298,24 @@ local SaveManager = {} do
 			end
 			notify(string.format("Deleted config %q", name))
 			refreshList()
-		end)
+		end))
 
-		section:CreateButton({ Title = "Refresh List" }, function()
+		section:CreateButton({ Title = "Refresh List" }, safe(function()
 			refreshList()
-		end)
+		end))
 
-		section:CreateButton({ Title = "Set As Autoload" }, function()
+		section:CreateButton({ Title = "Set As Autoload" }, safe(function()
 			local name = configList:Get()
 			if not name then return notify("Select a config first") end
 			writefile(autoloadPath, name)
 			autoloadLabel:SetText("Current autoload config: " .. name)
 			notify(string.format("Set %q to auto load", name))
-		end)
+		end))
 
 		self:SetIgnoreIndexes({ "SaveManager_ConfigList", "SaveManager_ConfigName" })
 	end
 
-	SaveManager:BuildFolderTree()
+	pcall(function() SaveManager:BuildFolderTree() end)
 end
 
 return SaveManager
